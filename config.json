@@ -1,0 +1,14 @@
+{
+    "port": 3000,
+    "adminDomain": "admin.example.com",
+    "adminUsername": "admin",
+    "adminPassword": "password123",
+    "domains": {
+      "short.example.com": {
+        "defaultRedirect": "https://example.com"
+      },
+      "link.example.com": {
+        "defaultRedirect": "https://example.com/404"
+      }
+    }
+  }
