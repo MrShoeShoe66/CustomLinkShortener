@@ -1,0 +1,10 @@
+{
+  "1": {
+    "url": "https://duckduckgo.com/",
+    "domain": "localhost"
+  },
+  "test": {
+    "url": "https://www.google.com/",
+    "domain": "link.example.com"
+  }
+}

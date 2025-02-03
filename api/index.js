@@ -1,5 +1,4 @@
 import express from 'express';
-import { promises as fs } from 'fs';
 import basicAuth from 'express-basic-auth';
 const app = express();
 
@@ -9,51 +8,61 @@ app.use(express.urlencoded({ extended: true }));
 const CONFIG_FILE = 'config.json';
 const DATA_FILE = 'links.json';
 
+let config = {
+    port: 3000,
+    adminDomain: 'admin.example.com',
+    adminUsername: 'admin',
+    adminPassword: 'password123',
+    domains: {
+        'short.example.com': {
+            defaultRedirect: 'https://example.com'
+        },
+        'link.example.com': {
+            defaultRedirect: 'https://example.com/404'
+        }
+    }
+};
+
+let links = {};
+
 async function loadConfig() {
     try {
-        const config = await fs.readFile(CONFIG_FILE, 'utf8');
-        return JSON.parse(config);
+        const configData = await fs.readFile(CONFIG_FILE, 'utf8');
+        config = JSON.parse(configData);
     } catch {
-        const defaultConfig = {
-            port: 3000,
-            adminDomain: 'admin.example.com',
-            adminUsername: 'admin',
-            adminPassword: 'password123',
-            domains: {
-                'short.example.com': {
-                    defaultRedirect: 'https://example.com'
-                },
-                'link.example.com': {
-                    defaultRedirect: 'https://example.com/404'
-                }
-            }
-        };
-        await fs.writeFile(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
-        return defaultConfig;
+        console.warn('Could not read config file, using default config');
     }
 }
 
 async function loadLinks() {
     try {
         const data = await fs.readFile(DATA_FILE, 'utf8');
-        return JSON.parse(data);
+        links = JSON.parse(data);
     } catch {
-        await fs.writeFile(DATA_FILE, JSON.stringify({}, null, 2));
-        return {};
+        console.warn('Could not read links file, starting with empty links');
     }
 }
 
 async function saveLinks(links) {
-    await fs.writeFile(DATA_FILE, JSON.stringify(links, null, 2));
+    try {
+        await fs.writeFile(DATA_FILE, JSON.stringify(links, null, 2));
+    } catch (err) {
+        console.error('Error saving links:', err);
+    }
 }
 
 async function updateConfig(newConfig) {
-    await fs.writeFile(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
+    try {
+        config = { ...config, ...newConfig };
+        await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    } catch (err) {
+        console.error('Error updating config:', err);
+    }
 }
 
 async function startServer() {
-    const config = await loadConfig();
-    let links = await loadLinks();
+    await loadConfig();
+    await loadLinks();
 
     const authMiddleware = basicAuth({
         users: { [config.adminUsername]: config.adminPassword },
@@ -169,7 +178,7 @@ async function startServer() {
             const url = document.getElementById('targetUrl').value;
             const domain = document.getElementById('domain').value;
             
-            const response = await fetch('/admin/links/export', {
+            const response = await fetch('/admin/links', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code, url, domain })
@@ -462,133 +471,134 @@ async function startServer() {
         res.redirect(domainConfig?.defaultRedirect || 'https://example.com');
     });
 
+    app.get('/admin/domains', (_req, res) => {
+        const domainsHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <title>Domain Management</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .section { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; }
+        input, select, textarea { margin: 5px; padding: 5px; }
+        button { margin: 5px; padding: 5px 10px; }
+    </style>
+    </head>
+    <body>
+    <nav>
+                <a href="/admin/links">Links</a> |
+                <a href="/admin/settings">Settings</a> |
+                <a href="/admin/import-export">Import/Export</a> |
+                <a href="/admin/domains">Domains</a>
+            </nav>
+            <hr>
+    <div class="section">
+        <h2>Domain Management</h2>
+        <form id="domainForm">
+            <div>
+                <label>Domain:</label>
+                <input type="text" id="newDomain" required>
+            </div>
+            <div>
+                <label>Default Redirect URL:</label>
+                <input type="url" id="defaultRedirect" required>
+            </div>
+            <button type="submit">Add Domain</button>
+        </form>
+    
+        <h2>Existing Domains</h2>
+        <div id="domainsList"></div>
+    </div>
+    
+    <script>
+    async function loadDomains() {
+        try {
+            const response = await fetch('/admin/settings/export');
+            const settings = await response.json();
+            const list = document.getElementById('domainsList');
+            list.innerHTML = Object.entries(settings.domains)
+                .map(([domain, data]) => {
+                    const safeDomain = domain.replace(/[<>]/g, '');
+                    const safeRedirect = data.defaultRedirect.replace(/[<>]/g, '');
+                    return \`
+                        <div class="domain-item">
+                            <strong>\${safeDomain}</strong>: 
+                            \${safeRedirect}
+                            <button onclick="deleteDomain('\${safeDomain}')">Delete</button>
+                        </div>
+                    \`;
+                })
+                .join('');
+        } catch (err) {
+            console.error('Error loading domains:', err);
+        }
+    }
+    
+    async function deleteDomain(domain) {
+        if (confirm('Delete this domain?')) {
+            try {
+                await fetch(\`/admin/domains/\${encodeURIComponent(domain)}\`, { 
+                    method: 'DELETE'
+                });
+                await loadDomains();
+            } catch (err) {
+                console.error('Error deleting domain:', err);
+            }
+        }
+    }
+    
+    document.getElementById('domainForm').onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+            const domain = document.getElementById('newDomain').value;
+            const defaultRedirect = document.getElementById('defaultRedirect').value;
+            
+            const response = await fetch('/admin/domains', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain, defaultRedirect })
+            });
+    
+            if (response.ok) {
+                document.getElementById('domainForm').reset();
+                await loadDomains();
+            } else {
+                const error = await response.json();
+                alert(error.error || 'Error adding domain');
+            }
+        } catch (err) {
+            console.error('Error adding domain:', err);
+            alert('Error adding domain');
+        }
+    };
+    
+    loadDomains();
+    </script>
+    </body>
+    </html>`;
+        res.send(domainsHtml);
+    });
+    
+    app.post('/admin/domains', async (req, res) => {
+        const { domain, defaultRedirect } = req.body;
+        if (!domain || !defaultRedirect) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        config.domains[domain] = { defaultRedirect };
+        await updateConfig(config);
+        res.json({ success: true });
+    });
+    
+    app.delete('/admin/domains/:domain', async (req, res) => {
+        const { domain } = req.params;
+        delete config.domains[domain];
+        await updateConfig(config);
+        res.json({ success: true });
+    });
+
     app.listen(config.port, () => {
         console.log(`Server running on port ${config.port}`);
     });
 }
 
 startServer().catch(console.error);
-app.get('/admin/domains', (_req, res) => {
-    const domainsHtml = `
-<!DOCTYPE html>
-<html>
-<head>
-<title>Domain Management</title>
-<style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    .section { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; }
-    input, select, textarea { margin: 5px; padding: 5px; }
-    button { margin: 5px; padding: 5px 10px; }
-</style>
-</head>
-<body>
-<nav>
-            <a href="/admin/links">Links</a> |
-            <a href="/admin/settings">Settings</a> |
-            <a href="/admin/import-export">Import/Export</a> |
-            <a href="/admin/domains">Domains</a>
-        </nav>
-        <hr>
-<div class="section">
-    <h2>Domain Management</h2>
-    <form id="domainForm">
-        <div>
-            <label>Domain:</label>
-            <input type="text" id="newDomain" required>
-        </div>
-        <div>
-            <label>Default Redirect URL:</label>
-            <input type="url" id="defaultRedirect" required>
-        </div>
-        <button type="submit">Add Domain</button>
-    </form>
-
-    <h2>Existing Domains</h2>
-    <div id="domainsList"></div>
-</div>
-
-<script>
-async function loadDomains() {
-    try {
-        const response = await fetch('/admin/settings/export');
-        const settings = await response.json();
-        const list = document.getElementById('domainsList');
-        list.innerHTML = Object.entries(settings.domains)
-            .map(([domain, data]) => {
-                const safeDomain = domain.replace(/[<>]/g, '');
-                const safeRedirect = data.defaultRedirect.replace(/[<>]/g, '');
-                return \`
-                    <div class="domain-item">
-                        <strong>\${safeDomain}</strong>: 
-                        \${safeRedirect}
-                        <button onclick="deleteDomain('\${safeDomain}')">Delete</button>
-                    </div>
-                \`;
-            })
-            .join('');
-    } catch (err) {
-        console.error('Error loading domains:', err);
-    }
-}
-
-async function deleteDomain(domain) {
-    if (confirm('Delete this domain?')) {
-        try {
-            await fetch(\`/admin/domains/\${encodeURIComponent(domain)}\`, { 
-                method: 'DELETE'
-            });
-            await loadDomains();
-        } catch (err) {
-            console.error('Error deleting domain:', err);
-        }
-    }
-}
-
-document.getElementById('domainForm').onsubmit = async (e) => {
-    e.preventDefault();
-    try {
-        const domain = document.getElementById('newDomain').value;
-        const defaultRedirect = document.getElementById('defaultRedirect').value;
-        
-        const response = await fetch('/admin/domains', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ domain, defaultRedirect })
-        });
-
-        if (response.ok) {
-            document.getElementById('domainForm').reset();
-            await loadDomains();
-        } else {
-            const error = await response.json();
-            alert(error.error || 'Error adding domain');
-        }
-    } catch (err) {
-        console.error('Error adding domain:', err);
-        alert('Error adding domain');
-    }
-};
-
-loadDomains();
-</script>
-</body>
-</html>`;
-    res.send(domainsHtml);
-});
-
-app.post('/admin/domains', async (req, res) => {
-    const { domain, defaultRedirect } = req.body;
-    if (!domain || !defaultRedirect) {
-        return res.status(400).json({ error: 'Missing required fields' });
-    }
-    config.domains[domain] = { defaultRedirect };
-    await updateConfig(config);
-    res.json({ success: true });
-});
-
-app.delete('/admin/domains/:domain', async (req, res) => {
-    const { domain } = req.params;
-    delete config.domains[domain];
-    await updateConfig(config);
-    res.json({ success: true });
-});
